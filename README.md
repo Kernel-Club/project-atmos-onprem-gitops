@@ -1,30 +1,57 @@
-# project-atmos-onprem-gitops
+# project-atmos-onprem-k3s
 
-Desired state of the on-premise Kubernetes cluster (k3s) of Project Atmos, delivered by Flux.
+Everything that runs inside the on-premise Kubernetes cluster of **Project Atmos**, delivered by Flux (GitOps).
 
-## Purpose
+```text
+Nexus ─► Flux: new tag ─► commit to main ─► Helm upgrade ─► http://atmos.lan
+```
 
-Flux watches this repository and applies it to the cluster. Flux image automation polls the Nexus registry and commits new image tags to `main`; Flux then upgrades the Helm release.
+> k3s itself is installed by [project-atmos-onprem-ansible](https://github.com/Kernel-Club/project-atmos-onprem-ansible) (`roles/k3s/`). This repository holds only the workloads.
 
-## Planned content
+## Contents
 
-- Flux configuration (sources, kustomizations, image automation)
-- Helm chart of the application (frontend, backend, MongoDB, Redis)
-- Ingress (`ingressClassName: traefik`) and the Traefik `HelmChartConfig`
-- NetworkPolicy
-- Monitoring: Prometheus, Grafana, kube-state-metrics (namespace `monitoring`)
-- Values
+| Path | What it does |
+|---|---|
+| `flux-system/` | Flux configuration, HelmRelease of the application, image automation |
+| `charts/atmos/` | Helm chart: frontend, backend, MongoDB, Redis, Ingress, NetworkPolicy, memory limits |
+| `monitoring/` | Prometheus, Grafana, kube-state-metrics (namespace `monitoring`) |
+
+| Address | Service |
+|---|---|
+| `http://atmos.lan` | Application (`/` → frontend, `/api` → backend) |
+| `http://grafana.atmos.lan` | Dashboards |
+
+## Delivery
+
+1. Jenkins pushes a new image to Nexus (`<build>-<short-sha>`).
+2. Flux selects the highest build number and commits the tag to `spec.values` of the HelmRelease in `main`.
+3. Flux upgrades the Helm release and the pods are replaced.
+
+```bash
+flux get helmreleases -A      # deployed version and failures
+flux get images all -A        # scanned tags and selected image
+```
+
+**Rollback:**
+
+```bash
+flux suspend image update --all -n flux-system   # stop Flux from selecting the newest image again
+git revert <tag-commit> && git push              # restore the previous version
+flux resume image update --all -n flux-system    # after the fix is built
+```
+
+**Logs:** `kubectl logs -n atmos deploy/backend` (add `--previous` after a restart). There is no central log storage.
 
 ## Secrets
 
-Application secrets (OpenWeather key, MongoDB password) are Kubernetes Secrets created by hand and never stored in Git (see `.gitignore`). Flux uses a deploy key with write access to this repository only.
+Not stored in Git. Created by hand with `kubectl create secret`: OpenWeather key, MongoDB password, Grafana admin password, Nexus pull credentials and CA for Flux. Flux uses a deploy key with write access to this repository only.
 
-## Related repositories
+## Related
 
-- [project-atmos-dev](https://github.com/Kernel-Club/project-atmos-dev) — application and architecture docs (`docs/on-premise/`)
-- [project-atmos-onprem-provision](https://github.com/Kernel-Club/project-atmos-onprem-provision) — Ansible for the VMs and k3s
-- [project-atmos-onprem-jenkins](https://github.com/Kernel-Club/project-atmos-onprem-jenkins) — CI pipeline that publishes the images
+| Repository | Role |
+|---|---|
+| [project-atmos-dev](https://github.com/Kernel-Club/project-atmos-dev) | Application source and on-premise docs (`docs/on-premise/`) |
+| [project-atmos-onprem-ansible](https://github.com/Kernel-Club/project-atmos-onprem-ansible) | Servers and k3s installation |
+| [project-atmos-onprem-jenkins](https://github.com/Kernel-Club/project-atmos-onprem-jenkins) | CI pipeline that publishes the images |
 
-## Branching
-
-`main` is the state of the cluster. Changes go through `feature/*` or `fix/*` branches and a Pull Request to `main`. Flux commits image tag updates directly to `main`. See `docs/on-premise/branching-model.md` in `project-atmos-dev`.
+Branching: `main` is the state of the cluster; changes via `feature/*` / `fix/*` and a Pull Request. Flux commits image tags directly to `main` ([branching model](https://github.com/Kernel-Club/project-atmos-dev/blob/develop/docs/on-premise/branching-model.md)).
